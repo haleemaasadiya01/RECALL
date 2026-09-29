@@ -13,7 +13,7 @@
 
 ## 🎬 Demo
 
-![Dashboard Preview](https://github.com/haleemaasadiya01/HR-Analytics-Dashboard/blob/main/HRAnalyticDashboard.png)
+![Dashboard Preview](https://github.com/haleemaasadiya01/RECALL/blob/61c43256d88d2e2c5c085d64fbde0dcc86dde2c3/recall/Screenshot%202026-09-29%20194528.png)
 
 **Before:** *"Connection timeout on DB write"* → LLM gives generic advice about checking connection pools.
 
