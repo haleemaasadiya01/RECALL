@@ -13,7 +13,7 @@
 
 ## 🎬 Demo
 
-<img src="[recall/Screenshot 2026-09-29 194528.png](https://github.com/haleemaasadiya01/RECALL/blob/73514a16f564bf7d20d8fdb7610c5d86edbac318/recall/Screenshot%202026-09-29%20194528.png)" alt="Screenshot" width="400">
+![Alt text describing the image]()
 
 **Before:** *"Connection timeout on DB write"* → LLM gives generic advice about checking connection pools.
 
