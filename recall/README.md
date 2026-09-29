@@ -13,7 +13,7 @@
 
 ## 🎬 Demo
 
-![Alt text describing the image]()
+![Alt text describing the image](recall/Screenshot 2026-09-29 194528.png)
 
 **Before:** *"Connection timeout on DB write"* → LLM gives generic advice about checking connection pools.
 
