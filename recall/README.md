@@ -13,7 +13,7 @@
 
 ## 🎬 Demo
 
-<img src="" alt="Screenshot" width="400">
+<img src="recall/Screenshot 2026-09-29 194528.png" alt="Screenshot" width="400">
 
 **Before:** *"Connection timeout on DB write"* → LLM gives generic advice about checking connection pools.
 
