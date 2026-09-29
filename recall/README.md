@@ -13,13 +13,12 @@
 
 ## 🎬 Demo
 
-[SCREENSHOT/GIF PLACEHOLDER: Side-by-side memory vs no-memory comparison]
+<img src="" alt="Screenshot" width="400">
 
 **Before:** *"Connection timeout on DB write"* → LLM gives generic advice about checking connection pools.
 
 **After (with Recall memory):** *"We've seen this 4 times before. Last time it was RDS at 95% CPU from an unoptimized query. Fix: kill the long-running query and add a composite index. Prevention: CPU alert at 80%. Confidence: High (92%)."*
 
-**Live Demo:** `[LIVE URL PLACEHOLDER]` (Click "Load Demo Incidents" to try instantly)
 
 ---
 
