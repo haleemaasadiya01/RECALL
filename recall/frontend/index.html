@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recall – Incident Debugging Agent</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50:'#eff6ff',100:'#dbeafe',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',900:'#1e3a8a' },
+            surface: { DEFAULT:'#1e2130', light:'#f8fafc' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --brand: #3b82f6; }
+    body { font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; }
+    .dark body { background: #0f1117; color: #e2e8f0; }
+    .light body { background: #f8fafc; color: #1e293b; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+    /* card */
+    .card { border-radius: 12px; border: 1px solid; transition: border-color .2s; }
+    .dark .card { background: #1a1f2e; border-color: #2d3748; }
+    .light .card { background: #ffffff; border-color: #e2e8f0; }
+
+    /* tag pill */
+    .tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+    .tag-sev-p1 { background:#fee2e2; color:#991b1b; }
+    .tag-sev-p2 { background:#fef3c7; color:#92400e; }
+    .tag-sev-p3 { background:#dbeafe; color:#1e40af; }
+    .tag-sev-p4 { background:#d1fae5; color:#065f46; }
+    .dark .tag-sev-p1 { background:#7f1d1d; color:#fca5a5; }
+    .dark .tag-sev-p2 { background:#78350f; color:#fcd34d; }
+    .dark .tag-sev-p3 { background:#1e3a8a; color:#93c5fd; }
+    .dark .tag-sev-p4 { background:#064e3b; color:#6ee7b7; }
+
+    /* memory badge */
+    .memory-badge { border-left: 3px solid #3b82f6; padding-left: 10px; }
+
+    /* confidence bar */
+    .conf-bar { height:6px; border-radius:3px; background:#334155; overflow:hidden; }
+    .conf-fill { height:100%; border-radius:3px; transition: width 1s ease; }
+
+    /* spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.8s linear infinite; }
+
+    /* fade-in */
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .fade-in { animation: fadeIn 0.3s ease forwards; }
+
+    /* tabs */
+    .tab-btn { border-bottom: 2px solid transparent; padding: 8px 16px; font-size:14px; font-weight:500; cursor:pointer; transition: all .2s; }
+    .tab-btn.active { border-bottom-color: #3b82f6; color: #3b82f6; }
+    .dark .tab-btn:not(.active) { color: #94a3b8; }
+    .light .tab-btn:not(.active) { color: #64748b; }
+
+    /* compare columns */
+    .compare-col { flex: 1; min-width: 0; }
+
+    /* cold start banner */
+    #cold-banner { display:none; }
+
+    /* toggle switch */
+    .toggle-track { width:44px; height:24px; border-radius:12px; position:relative; cursor:pointer; transition:background .2s; }
+    .toggle-thumb { width:18px; height:18px; border-radius:50%; background:#fff; position:absolute; top:3px; left:3px; transition:transform .2s; }
+    .toggle-checked .toggle-thumb { transform:translateX(20px); }
+    .toggle-checked { background:#3b82f6 !important; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ── Cold start banner ──────────────────────────────── -->
+<div id="cold-banner" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+  <div class="card p-8 max-w-sm text-center fade-in">
+    <div class="text-4xl mb-4">☕</div>
+    <h2 class="text-xl font-bold mb-2">Waking up…</h2>
+    <p class="text-sm opacity-70 mb-4">The server is starting (free-tier cold start). This takes ~30 seconds.</p>
+    <div class="w-full conf-bar"><div id="cold-progress" class="conf-fill bg-brand-500" style="width:0%"></div></div>
+  </div>
+</div>
+
+<!-- ── Top nav ────────────────────────────────────────── -->
+<nav class="sticky top-0 z-40 border-b dark:border-gray-800 light:border-gray-200 dark:bg-[#0f1117]/90 bg-white/90 backdrop-blur-md">
+  <div class="max-w-7xl mx-auto px-4 flex items-center justify-between h-14">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">🔍</span>
+      <span class="font-bold text-lg tracking-tight">Recall</span>
+      <span class="hidden sm:inline text-xs opacity-50 ml-1">by Hindsight</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="health-dot" class="w-2 h-2 rounded-full bg-gray-500" title="Checking…"></span>
+      <span id="health-text" class="text-xs opacity-60">checking…</span>
+      <button onclick="toggleTheme()" class="p-2 rounded-lg dark:hover:bg-gray-800 hover:bg-gray-100 transition text-lg" title="Toggle theme">
+        <span id="theme-icon">☀️</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Main layout ────────────────────────────────────── -->
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+  <!-- Tab bar -->
+  <div class="flex gap-0 border-b dark:border-gray-800 border-gray-200 mb-6 overflow-x-auto">
+    <button class="tab-btn active" onclick="switchTab('diagnose', this)">🔎 Diagnose</button>
+    <button class="tab-btn" onclick="switchTab('compare', this)">⚡ Memory vs No-Memory</button>
+    <button class="tab-btn" onclick="switchTab('ingest', this)">📥 Add Incident</button>
+    <button class="tab-btn" onclick="switchTab('changes', this)">🔄 Change Events</button>
+    <button class="tab-btn" onclick="switchTab('patterns', this)">📊 Patterns</button>
+    <button class="tab-btn" onclick="switchTab('timeline', this)">📅 Timeline</button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ DIAGNOSE ═══ -->
+  <div id="tab-diagnose" class="tab-content">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- Query panel -->
+      <div class="lg:col-span-2">
+        <div class="card p-6">
+          <h2 class="font-semibold text-lg mb-4">Ask the Agent</h2>
+
+          <!-- Memory toggle -->
+          <div class="flex items-center gap-3 mb-4 p-3 rounded-lg dark:bg-gray-800/50 bg-gray-50">
+            <div id="mem-toggle" class="toggle-track dark:bg-gray-600 bg-gray-300 toggle-checked" onclick="toggleMemory()">
+              <div class="toggle-thumb"></div>
+            </div>
+            <div>
+              <div class="text-sm font-medium" id="mem-toggle-label">🧠 Memory ON</div>
+              <div class="text-xs opacity-60">Toggle to compare with memoryless LLM</div>
+            </div>
+          </div>
+
+          <textarea id="query-input" rows="4" placeholder="Describe the incident or paste a stack trace…
+e.g. &quot;We're getting connection timeouts on the auth service. PostgreSQL write operations hanging.&quot;"
+            class="w-full rounded-lg p-3 text-sm dark:bg-gray-900 bg-gray-50 dark:border-gray-700 border-gray-200 border resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono"></textarea>
+
+          <div class="flex gap-3 mt-3 flex-wrap">
+            <input id="service-filter" type="text" placeholder="Filter by service (optional)"
+              class="flex-1 min-w-[160px] rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 dark:border-gray-700 border-gray-200 border focus:outline-none focus:ring-2 focus:ring-brand-500" />
+            <button onclick="runDiagnose()" id="diagnose-btn"
+              class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold text-sm transition flex items-center gap-2">
+              <span id="diagnose-btn-icon">🔎</span> <span>Diagnose</span>
+            </button>
+          </div>
+
+          <!-- Quick demo prompts -->
+          <div class="mt-3 flex flex-wrap gap-2">
+            <span class="text-xs opacity-50">Quick demo:</span>
+            <button onclick="setQuery('Connection timeout on DB write. PostgreSQL write operations are hanging on the payments-api service.')"
+              class="text-xs px-2 py-1 rounded dark:bg-gray-800 bg-gray-100 hover:ring-1 ring-brand-500 transition">DB timeout demo</button>
+            <button onclick="setQuery('auth-service is returning 503 errors. Users cannot log in.')"
+              class="text-xs px-2 py-1 rounded dark:bg-gray-800 bg-gray-100 hover:ring-1 ring-brand-500 transition">Auth 503 demo</button>
+            <button onclick="setQuery('Memory leak detected in checkout-worker after recent Node.js upgrade')"
+              class="text-xs px-2 py-1 rounded dark:bg-gray-800 bg-gray-100 hover:ring-1 ring-brand-500 transition">Node memory leak</button>
+          </div>
+        </div>
+
+        <!-- Result -->
+        <div id="diagnose-result" class="mt-4 hidden fade-in"></div>
+      </div>
+
+      <!-- Sidebar: memories used -->
+      <div>
+        <div class="card p-4">
+          <h3 class="font-semibold text-sm mb-3 flex items-center gap-2">
+            <span>🧠</span> Memories Recalled
+            <span id="mem-count-badge" class="ml-auto text-xs px-2 py-0.5 rounded-full dark:bg-gray-700 bg-gray-200">0</span>
+          </h3>
+          <div id="memories-panel" class="space-y-3 text-xs">
+            <p class="opacity-50">Run a diagnosis to see which memories Hindsight recalled.</p>
+          </div>
+        </div>
+
+        <!-- Load demo data -->
+        <div class="card p-4 mt-4">
+          <h3 class="font-semibold text-sm mb-2">🚀 Demo Data</h3>
+          <p class="text-xs opacity-60 mb-3">Load curated demo incidents to see Recall in action.</p>
+          <button onclick="loadDemoData()" id="demo-btn"
+            class="w-full py-2 text-sm rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold transition">
+            Load Demo Incidents
+          </button>
+          <div id="demo-status" class="mt-2 text-xs opacity-70 hidden"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ COMPARE ════ -->
+  <div id="tab-compare" class="tab-content hidden">
+    <div class="card p-6 mb-6">
+      <h2 class="font-semibold text-lg mb-2 flex items-center gap-2">⚡ Memory vs No-Memory</h2>
+      <p class="text-sm opacity-60 mb-4">Same question — two very different answers. See why persistent memory matters.</p>
+      <textarea id="compare-input" rows="3" placeholder="Paste incident description or stack trace…"
+        class="w-full rounded-lg p-3 text-sm dark:bg-gray-900 bg-gray-50 dark:border-gray-700 border-gray-200 border resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono"></textarea>
+      <div class="flex gap-3 mt-3 flex-wrap">
+        <button onclick="setQuery('Connection timeout on DB write. PostgreSQL write operations are hanging on the payments-api service.', 'compare-input')"
+          class="text-xs px-3 py-1.5 rounded dark:bg-gray-800 bg-gray-100 hover:ring-1 ring-brand-500 transition">DB timeout (demo)</button>
+        <button onclick="runCompare()" id="compare-btn"
+          class="ml-auto px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold text-sm transition">
+          ⚡ Compare
+        </button>
+      </div>
+    </div>
+
+    <div id="compare-result" class="hidden">
+      <div class="flex gap-4 items-stretch flex-col md:flex-row">
+        <!-- Without memory -->
+        <div class="compare-col">
+          <div class="rounded-lg border-2 border-red-400/40 p-1">
+            <div class="px-3 py-2 bg-red-500/10 rounded-t text-sm font-bold text-red-400 flex items-center gap-2">
+              <span>❌</span> Without Memory (Plain LLM)
+            </div>
+            <div id="compare-without" class="p-4 text-sm space-y-3"></div>
+          </div>
+        </div>
+        <!-- With memory -->
+        <div class="compare-col">
+          <div class="rounded-lg border-2 border-green-400/40 p-1">
+            <div class="px-3 py-2 bg-green-500/10 rounded-t text-sm font-bold text-green-400 flex items-center gap-2">
+              <span>✅</span> With Hindsight Memory
+            </div>
+            <div id="compare-with" class="p-4 text-sm space-y-3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ INGEST ═════ -->
+  <div id="tab-ingest" class="tab-content hidden">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Manual form -->
+      <div class="card p-6">
+        <h2 class="font-semibold text-lg mb-4">Add Incident</h2>
+        <form id="incident-form" onsubmit="submitIncident(event)" class="space-y-4">
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Title *</label>
+            <input name="title" required placeholder="e.g. Connection timeout on DB write"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium opacity-70 block mb-1">Severity</label>
+              <select name="severity" class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none">
+                <option value="P1">P1 – Critical</option>
+                <option value="P2">P2 – High</option>
+                <option value="P3" selected>P3 – Medium</option>
+                <option value="P4">P4 – Low</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-medium opacity-70 block mb-1">Fix Style</label>
+              <select name="fix_style" class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none">
+                <option value="quick_patch">Quick Patch</option>
+                <option value="proper_fix">Proper Fix</option>
+                <option value="rollback">Rollback</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Affected Services (comma-separated)</label>
+            <input name="affected_services" placeholder="auth-service, payments-api"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          </div>
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Error Messages / Stack Trace</label>
+            <textarea name="error_messages" rows="3" placeholder="Paste error messages or stack trace here…"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono"></textarea>
+          </div>
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Root Cause</label>
+            <input name="root_cause" placeholder="e.g. RDS CPU at 95% due to unoptimized query"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          </div>
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Resolution Steps</label>
+            <textarea name="resolution_steps" rows="2" placeholder="1. Kill long-running query  2. Add index…"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500"></textarea>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium opacity-70 block mb-1">Fixed By</label>
+              <input name="fixed_by" placeholder="engineer name"
+                class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none" />
+            </div>
+            <div>
+              <label class="text-xs font-medium opacity-70 block mb-1">Duration (minutes)</label>
+              <input name="duration_minutes" type="number" min="0" placeholder="45"
+                class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none" />
+            </div>
+          </div>
+
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Prevention Notes</label>
+            <input name="prevention_notes" placeholder="e.g. Add CPU alert at 80%, review query plans"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          </div>
+
+          <button type="submit" id="ingest-btn"
+            class="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold text-sm transition">
+            💾 Store in Memory
+          </button>
+        </form>
+        <div id="ingest-status" class="mt-3 text-sm hidden"></div>
+      </div>
+
+      <!-- JSON upload -->
+      <div class="card p-6">
+        <h2 class="font-semibold text-lg mb-4">Bulk Upload (JSON)</h2>
+        <p class="text-sm opacity-60 mb-4">Upload a JSON array of incident objects.</p>
+        <div id="drop-zone" ondragover="event.preventDefault()" ondrop="handleFileDrop(event)"
+          class="border-2 border-dashed dark:border-gray-600 border-gray-300 rounded-xl p-10 text-center cursor-pointer hover:border-brand-500 transition"
+          onclick="document.getElementById('file-input').click()">
+          <div class="text-3xl mb-2">📂</div>
+          <p class="text-sm opacity-70">Drag & drop JSON file, or click to browse</p>
+          <input id="file-input" type="file" accept=".json" class="hidden" onchange="handleFileSelect(event)" />
+        </div>
+        <div id="upload-status" class="mt-3 text-sm hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ CHANGES ════ -->
+  <div id="tab-changes" class="tab-content hidden">
+    <div class="card p-6 max-w-2xl">
+      <h2 class="font-semibold text-lg mb-2">Add Change Event</h2>
+      <p class="text-sm opacity-60 mb-4">Record infrastructure/deploy changes so the agent can detect precursors.</p>
+      <form id="change-form" onsubmit="submitChange(event)" class="space-y-4">
+        <div>
+          <label class="text-xs font-medium opacity-70 block mb-1">Title *</label>
+          <input name="title" required placeholder="e.g. Node.js 18 → 20 upgrade on checkout-worker"
+            class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Event Type</label>
+            <select name="event_type" class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none">
+              <option value="deploy">Deploy</option>
+              <option value="config">Config Change</option>
+              <option value="infra">Infrastructure</option>
+              <option value="dependency">Dependency Update</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-medium opacity-70 block mb-1">Author</label>
+            <input name="author" placeholder="engineer or automation"
+              class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none" />
+          </div>
+        </div>
+        <div>
+          <label class="text-xs font-medium opacity-70 block mb-1">Affected Services</label>
+          <input name="affected_services" placeholder="checkout-worker, payments-api"
+            class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none" />
+        </div>
+        <div>
+          <label class="text-xs font-medium opacity-70 block mb-1">Description *</label>
+          <textarea name="description" required rows="3" placeholder="What changed and why?"
+            class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500"></textarea>
+        </div>
+        <button type="submit" class="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold text-sm transition">
+          🔄 Record Change Event
+        </button>
+      </form>
+      <div id="change-status" class="mt-3 text-sm hidden"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ PATTERNS ═══ -->
+  <div id="tab-patterns" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="font-semibold text-lg">📊 Pattern Insights</h2>
+      <button onclick="loadPatterns()" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-semibold transition">
+        🔄 Refresh
+      </button>
+    </div>
+    <div id="patterns-loading" class="hidden flex items-center gap-2 text-sm opacity-60">
+      <div class="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full spinner"></div>
+      Analysing incident patterns…
+    </div>
+    <div id="patterns-result" class="card p-6 prose prose-sm dark:prose-invert max-w-none">
+      <p class="opacity-50">Click "Refresh" to analyse all stored incidents and surface patterns.</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ TIMELINE ═══ -->
+  <div id="tab-timeline" class="tab-content hidden">
+    <h2 class="font-semibold text-lg mb-4">📅 Incident Timeline</h2>
+    <p class="text-sm opacity-60 mb-4">Recent incidents stored in memory.</p>
+    <div id="timeline-list" class="space-y-3">
+      <p class="opacity-50 text-sm">Loading timeline…</p>
+    </div>
+  </div>
+
+</div> <!-- /max-w-7xl -->
+
+<!-- ── Feedback modal ────────────────────────────────────── -->
+<div id="feedback-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60 backdrop-blur-sm">
+  <div class="card p-6 w-full max-w-md fade-in">
+    <h3 class="font-semibold text-lg mb-4">📝 Post-Incident Feedback</h3>
+    <form id="feedback-form" onsubmit="submitFeedback(event)" class="space-y-4">
+      <input type="hidden" id="fb-title" name="incident_title" />
+      <div>
+        <label class="text-xs font-medium opacity-70 block mb-2">Did the fix work?</label>
+        <div class="flex gap-3">
+          <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="fix_worked" value="true" required /> ✅ Yes</label>
+          <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="fix_worked" value="false" /> ❌ No</label>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs font-medium opacity-70 block mb-1">Confirmed Root Cause</label>
+        <input name="actual_root_cause" placeholder="What was actually wrong?"
+          class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 focus:outline-none" />
+      </div>
+      <div>
+        <label class="text-xs font-medium opacity-70 block mb-1">Notes</label>
+        <textarea name="notes" rows="2" class="w-full rounded-lg p-2.5 text-sm dark:bg-gray-900 bg-gray-50 border dark:border-gray-700 border-gray-200 resize-none focus:outline-none"></textarea>
+      </div>
+      <div class="flex gap-3">
+        <button type="button" onclick="closeFeedback()" class="flex-1 py-2 rounded-lg dark:bg-gray-700 bg-gray-200 text-sm font-semibold">Cancel</button>
+        <button type="submit" class="flex-1 py-2 rounded-lg bg-brand-600 text-white text-sm font-semibold">Submit</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let memoryEnabled = true;
+const API = '/api';
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.classList.contains('dark');
+  html.classList.toggle('dark', !isDark);
+  html.classList.toggle('light', isDark);
+  document.getElementById('theme-icon').textContent = isDark ? '🌙' : '☀️';
+  localStorage.setItem('theme', isDark ? 'light' : 'dark');
+}
+
+(function initTheme() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.classList.add(saved);
+  document.documentElement.classList.remove(saved === 'dark' ? 'light' : 'dark');
+  document.getElementById('theme-icon').textContent = saved === 'dark' ? '☀️' : '🌙';
+})();
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.remove('hidden');
+  btn.classList.add('active');
+  if (name === 'timeline') loadTimeline();
+}
+
+// ── Memory toggle ──────────────────────────────────────────────────────────
+function toggleMemory() {
+  memoryEnabled = !memoryEnabled;
+  const track = document.getElementById('mem-toggle');
+  const label = document.getElementById('mem-toggle-label');
+  track.classList.toggle('toggle-checked', memoryEnabled);
+  label.textContent = memoryEnabled ? '🧠 Memory ON' : '🚫 Memory OFF';
+}
+
+// ── Health check ───────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/health`);
+    const d = await r.json();
+    const dot = document.getElementById('health-dot');
+    const txt = document.getElementById('health-text');
+    if (d.status === 'ok') {
+      dot.className = 'w-2 h-2 rounded-full ' + (d.hindsight_connected ? 'bg-green-400' : 'bg-yellow-400');
+      txt.textContent = d.hindsight_connected ? 'Connected' : 'No API key';
+    }
+  } catch {
+    document.getElementById('health-dot').className = 'w-2 h-2 rounded-full bg-red-400';
+    document.getElementById('health-text').textContent = 'offline';
+  }
+}
+
+// Cold start detection
+(async function coldStart() {
+  const start = Date.now();
+  const banner = document.getElementById('cold-banner');
+  const progress = document.getElementById('cold-progress');
+  let attempts = 0;
+  const checkAlive = async () => {
+    try {
+      await fetch(`${API}/health`);
+      banner.style.display = 'none';
+      checkHealth();
+    } catch {
+      attempts++;
+      if (attempts === 1) banner.style.display = 'flex';
+      const pct = Math.min(90, attempts * 6);
+      progress.style.width = pct + '%';
+      setTimeout(checkAlive, 3000);
+    }
+  };
+  await checkAlive();
+})();
+
+setInterval(checkHealth, 30000);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function setQuery(text, fieldId = 'query-input') {
+  document.getElementById(fieldId).value = text;
+}
+
+function sevClass(sev) {
+  const map = { P1: 'tag-sev-p1', P2: 'tag-sev-p2', P3: 'tag-sev-p3', P4: 'tag-sev-p4' };
+  return map[sev] || 'tag-sev-p3';
+}
+
+function confColor(c) {
+  if (c >= 0.75) return '#22c55e';
+  if (c >= 0.45) return '#f59e0b';
+  if (c > 0) return '#f97316';
+  return '#64748b';
+}
+
+function spinner(id, label = 'Thinking…') {
+  return `<div id="${id}" class="flex items-center gap-2 py-4 text-sm opacity-60">
+    <div class="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full spinner"></div>
+    ${label}
+  </div>`;
+}
+
+function statusMsg(text, type = 'success') {
+  const colors = { success: 'text-green-500', error: 'text-red-500', info: 'text-blue-400' };
+  return `<p class="${colors[type] || colors.info}">${text}</p>`;
+}
+
+// ── Diagnose ───────────────────────────────────────────────────────────────
+async function runDiagnose() {
+  const query = document.getElementById('query-input').value.trim();
+  if (!query) return;
+
+  const btn = document.getElementById('diagnose-btn');
+  const btnIcon = document.getElementById('diagnose-btn-icon');
+  const resultEl = document.getElementById('diagnose-result');
+  const memPanel = document.getElementById('memories-panel');
+
+  btn.disabled = true;
+  btnIcon.innerHTML = '<div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full spinner inline-block"></div>';
+  resultEl.innerHTML = spinner('diag-spin', 'Recalling memories and reasoning…');
+  resultEl.classList.remove('hidden');
+  memPanel.innerHTML = '<p class="opacity-50">Searching…</p>';
+
+  const serviceFilter = document.getElementById('service-filter').value.trim() || null;
+
+  try {
+    const resp = await fetch(`${API}/diagnose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, service_filter: serviceFilter, with_memory: memoryEnabled })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    renderDiagnosis(d, resultEl);
+    renderMemories(d.memories_used, memPanel, document.getElementById('mem-count-badge'));
+  } catch (e) {
+    resultEl.innerHTML = `<div class="card p-4 text-red-400 text-sm">❌ Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btnIcon.textContent = '🔎';
+  }
+}
+
+function renderDiagnosis(d, el) {
+  const seen = d.have_we_seen_this;
+  const confPct = Math.round(d.confidence * 100);
+  const confColor_ = confColor(d.confidence);
+
+  const html = `
+  <div class="card p-6 fade-in space-y-5">
+
+    <!-- Header -->
+    <div class="flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-xl">${seen ? '🔁' : '🆕'}</span>
+          <h3 class="font-bold text-base">${seen ? `We've seen this ${d.occurrence_count} time${d.occurrence_count !== 1 ? 's' : ''} before` : 'No close match found in memory'}</h3>
+        </div>
+        ${d.occurrence_dates.length ? `<p class="text-xs opacity-60">Dates: ${d.occurrence_dates.slice(0,5).join(' · ')}</p>` : ''}
+      </div>
+      <div class="text-right shrink-0">
+        <div class="text-xs opacity-60 mb-1">Confidence</div>
+        <div class="font-bold text-sm" style="color:${confColor_}">${d.confidence_label} (${confPct}%)</div>
+        <div class="conf-bar w-24 mt-1"><div class="conf-fill" style="width:${confPct}%;background:${confColor_}"></div></div>
+      </div>
+    </div>
+
+    <!-- Mode badge -->
+    <div class="text-xs px-2 py-1 rounded inline-block ${d.with_memory ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">
+      ${d.with_memory ? '🧠 Hindsight Memory' : '🚫 No Memory (Plain LLM)'}
+    </div>
+
+    <!-- Root cause -->
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider opacity-50 mb-1">Root Cause Hypothesis</div>
+      <p class="text-sm dark:bg-gray-900/60 bg-gray-50 rounded-lg p-3 border dark:border-gray-700 border-gray-200">${d.root_cause_hypothesis}</p>
+    </div>
+
+    <!-- Recommended fix -->
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider opacity-50 mb-1">Recommended Fix</div>
+      <p class="text-sm dark:bg-green-900/20 bg-green-50 rounded-lg p-3 border dark:border-green-800/40 border-green-200">${d.recommended_fix}</p>
+    </div>
+
+    <!-- What to check -->
+    ${d.what_to_check_first.length ? `
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider opacity-50 mb-2">What to Check First</div>
+      <ol class="space-y-1 list-none">
+        ${d.what_to_check_first.map((c, i) => `<li class="text-sm flex gap-2"><span class="text-brand-500 font-bold shrink-0">${i+1}.</span>${c}</li>`).join('')}
+      </ol>
+    </div>` : ''}
+
+    <!-- Precursors -->
+    ${d.possible_precursors.length ? `
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider opacity-50 mb-2">⚠️ Possible Precursors</div>
+      <ul class="space-y-1">
+        ${d.possible_precursors.map(p => `<li class="text-sm flex gap-2"><span class="text-amber-400">→</span>${p}</li>`).join('')}
+      </ul>
+    </div>` : ''}
+
+    <!-- Prevention -->
+    <div class="border-t dark:border-gray-700 border-gray-200 pt-4">
+      <div class="text-xs font-semibold uppercase tracking-wider opacity-50 mb-1">🛡️ Prevention</div>
+      <p class="text-sm opacity-80">${d.prevention_recommendation}</p>
+    </div>
+
+    <!-- Feedback button -->
+    <div class="border-t dark:border-gray-700 border-gray-200 pt-4">
+      <button onclick="openFeedback('${d.query.replace(/'/g,'').slice(0,60)}')"
+        class="text-sm px-4 py-2 rounded-lg dark:bg-gray-700 bg-gray-100 hover:ring-1 ring-brand-500 transition">
+        📝 Submit feedback on this fix
+      </button>
+    </div>
+  </div>`;
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+function renderMemories(memories, panel, badge) {
+  badge.textContent = memories.length;
+  if (!memories.length) {
+    panel.innerHTML = '<p class="opacity-50 text-xs">No memories recalled.</p>';
+    return;
+  }
+  panel.innerHTML = memories.map(m => `
+    <div class="memory-badge dark:bg-gray-800/40 bg-blue-50/50 rounded-r p-2">
+      <p class="text-xs leading-relaxed opacity-80 line-clamp-4">${m.text.slice(0, 280)}…</p>
+      <div class="mt-1 flex flex-wrap gap-1">
+        ${(m.tags || []).slice(0,4).map(t => `<span class="tag bg-blue-500/20 text-blue-300">${t}</span>`).join('')}
+      </div>
+      ${m.occurred_start ? `<p class="text-xs opacity-40 mt-1">${m.occurred_start}</p>` : ''}
+    </div>`).join('');
+}
+
+// ── Compare ────────────────────────────────────────────────────────────────
+async function runCompare() {
+  const query = document.getElementById('compare-input').value.trim();
+  if (!query) return;
+
+  const btn = document.getElementById('compare-btn');
+  const resultEl = document.getElementById('compare-result');
+  btn.disabled = true;
+  btn.textContent = 'Comparing…';
+  resultEl.classList.remove('hidden');
+  document.getElementById('compare-without').innerHTML = spinner('cw-spin', 'Running without memory…');
+  document.getElementById('compare-with').innerHTML = spinner('cm-spin', 'Running with memory…');
+
+  try {
+    const resp = await fetch(`${API}/compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    renderComparePane(d.without_memory, document.getElementById('compare-without'));
+    renderComparePane(d.with_memory, document.getElementById('compare-with'));
+  } catch(e) {
+    document.getElementById('compare-without').innerHTML = `<p class="text-red-400 text-xs">Error: ${e.message}</p>`;
+    document.getElementById('compare-with').innerHTML = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Compare';
+  }
+}
+
+function renderComparePane(d, el) {
+  el.innerHTML = `
+    <div class="space-y-3 text-sm fade-in">
+      <div><strong class="text-xs uppercase opacity-50">Root Cause</strong>
+        <p class="mt-1 opacity-90">${d.root_cause_hypothesis}</p></div>
+      <div><strong class="text-xs uppercase opacity-50">Recommended Fix</strong>
+        <p class="mt-1 opacity-90">${d.recommended_fix}</p></div>
+      ${d.what_to_check_first.length ? `
+      <div><strong class="text-xs uppercase opacity-50">Check First</strong>
+        <ol class="mt-1 space-y-1">${d.what_to_check_first.map((c,i) => `<li><span class="text-brand-500 font-bold">${i+1}.</span> ${c}</li>`).join('')}</ol>
+      </div>` : ''}
+      ${d.have_we_seen_this ? `<div class="p-2 bg-green-500/10 rounded text-green-400 text-xs font-bold">✅ Seen ${d.occurrence_count}x before</div>` : `<div class="p-2 bg-gray-500/10 rounded text-gray-400 text-xs">No memory of past occurrences</div>`}
+      <div><strong class="text-xs uppercase opacity-50">Confidence</strong>
+        <span class="ml-2 font-bold" style="color:${confColor(d.confidence)}">${d.confidence_label} (${Math.round(d.confidence*100)}%)</span>
+      </div>
+      ${d.memories_used.length ? `<div class="text-xs opacity-50">📚 ${d.memories_used.length} memories used</div>` : ''}
+    </div>`;
+}
+
+// ── Ingest ─────────────────────────────────────────────────────────────────
+async function submitIncident(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const data = Object.fromEntries(fd.entries());
+  if (data.duration_minutes) data.duration_minutes = parseInt(data.duration_minutes);
+  else delete data.duration_minutes;
+
+  const statusEl = document.getElementById('ingest-status');
+  const btn = document.getElementById('ingest-btn');
+  btn.disabled = true;
+  btn.textContent = 'Storing…';
+  statusEl.classList.add('hidden');
+
+  try {
+    const resp = await fetch(`${API}/incidents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const d = await resp.json();
+    statusEl.innerHTML = d.success
+      ? statusMsg(`✅ Stored in memory (id: ${d.memory_id || 'ok'})`)
+      : statusMsg(`❌ ${d.message}`, 'error');
+    statusEl.classList.remove('hidden');
+    if (d.success) e.target.reset();
+  } catch(err) {
+    statusEl.innerHTML = statusMsg(`❌ ${err.message}`, 'error');
+    statusEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 Store in Memory';
+  }
+}
+
+async function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  await uploadFile(file);
+}
+async function handleFileDrop(e) {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  await uploadFile(file);
+}
+async function uploadFile(file) {
+  const statusEl = document.getElementById('upload-status');
+  statusEl.innerHTML = statusMsg(`Uploading ${file.name}…`, 'info');
+  statusEl.classList.remove('hidden');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const resp = await fetch(`${API}/incidents/upload`, { method: 'POST', body: fd });
+    const d = await resp.json();
+    statusEl.innerHTML = statusMsg(`✅ ${d.succeeded}/${d.total} incidents stored`);
+  } catch(err) {
+    statusEl.innerHTML = statusMsg(`❌ ${err.message}`, 'error');
+  }
+}
+
+// ── Change Events ──────────────────────────────────────────────────────────
+async function submitChange(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const data = Object.fromEntries(fd.entries());
+  const statusEl = document.getElementById('change-status');
+  statusEl.classList.add('hidden');
+
+  try {
+    const resp = await fetch(`${API}/changes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const d = await resp.json();
+    statusEl.innerHTML = d.success ? statusMsg('✅ Change event recorded') : statusMsg(`❌ ${d.message}`, 'error');
+    statusEl.classList.remove('hidden');
+    if (d.success) e.target.reset();
+  } catch(err) {
+    statusEl.innerHTML = statusMsg(`❌ ${err.message}`, 'error');
+    statusEl.classList.remove('hidden');
+  }
+}
+
+// ── Patterns ───────────────────────────────────────────────────────────────
+async function loadPatterns() {
+  const loadingEl = document.getElementById('patterns-loading');
+  const resultEl = document.getElementById('patterns-result');
+  loadingEl.classList.remove('hidden');
+  resultEl.innerHTML = '';
+
+  try {
+    const resp = await fetch(`${API}/patterns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budget: 'mid' })
+    });
+    const d = await resp.json();
+    resultEl.innerHTML = renderMarkdown(d.text);
+  } catch(err) {
+    resultEl.innerHTML = `<p class="text-red-400">Error: ${err.message}</p>`;
+  } finally {
+    loadingEl.classList.add('hidden');
+  }
+}
+
+// ── Timeline ───────────────────────────────────────────────────────────────
+async function loadTimeline() {
+  const listEl = document.getElementById('timeline-list');
+  listEl.innerHTML = '<p class="opacity-50 text-sm">Loading…</p>';
+  // Timeline pulls from memories list via the patterns reflect
+  try {
+    const resp = await fetch(`${API}/patterns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budget: 'low' })
+    });
+    const d = await resp.json();
+    listEl.innerHTML = `<div class="card p-6 prose prose-sm dark:prose-invert max-w-none">${renderMarkdown(d.text)}</div>`;
+  } catch(err) {
+    listEl.innerHTML = `<p class="text-red-400 text-sm">Error: ${err.message}</p>`;
+  }
+}
+
+// ── Demo Data ──────────────────────────────────────────────────────────────
+async function loadDemoData() {
+  const btn = document.getElementById('demo-btn');
+  const statusEl = document.getElementById('demo-status');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Ingesting curated demo incidents…';
+
+  try {
+    const resp = await fetch('/demo-data.json');
+    if (!resp.ok) throw new Error('demo-data.json not found – run the ingest script first');
+    const data = await resp.json();
+
+    let success = 0, total = 0;
+    for (const inc of (data.incidents || data)) {
+      total++;
+      const r = await fetch(`${API}/incidents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inc)
+      });
+      const d = await r.json();
+      if (d.success) success++;
+    }
+    statusEl.textContent = `✅ ${success}/${total} incidents loaded into memory`;
+    btn.textContent = '✅ Loaded!';
+  } catch(err) {
+    statusEl.textContent = `❌ ${err.message}`;
+    btn.disabled = false;
+    btn.textContent = 'Load Demo Incidents';
+  }
+}
+
+// ── Feedback modal ─────────────────────────────────────────────────────────
+function openFeedback(title) {
+  document.getElementById('fb-title').value = title;
+  document.getElementById('feedback-modal').classList.remove('hidden');
+}
+function closeFeedback() {
+  document.getElementById('feedback-modal').classList.add('hidden');
+}
+async function submitFeedback(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const data = {
+    incident_title: fd.get('incident_title'),
+    fix_worked: fd.get('fix_worked') === 'true',
+    actual_root_cause: fd.get('actual_root_cause'),
+    notes: fd.get('notes'),
+    fix_style: 'unknown'
+  };
+  await fetch(`${API}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  closeFeedback();
+  alert('✅ Feedback recorded! Recall will improve future recommendations.');
+}
+
+// ── Simple markdown renderer ────────────────────────────────────────────────
+function renderMarkdown(text) {
+  if (!text) return '';
+  return text
+    .replace(/^### (.+)$/gm, '<h3 class="font-bold text-base mt-4 mb-1">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-lg mt-5 mb-2">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="font-bold text-xl mt-6 mb-2">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code class="text-xs px-1 py-0.5 rounded dark:bg-gray-800 bg-gray-100">$1</code>')
+    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
+    .replace(/^(\d+)\. (.+)$/gm, '<li class="ml-4 list-decimal">$2</li>')
+    .replace(/\n\n/g, '</p><p class="mb-2">')
+    .replace(/\n/g, '<br/>');
+}
+</script>
+</body>
+</html>
